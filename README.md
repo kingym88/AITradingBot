@@ -277,7 +277,7 @@ This enhanced system includes:
 - ✅ Modular architecture
 - ✅ Full documentation
 
-The system has been completely rewritten to address the issues in the original ChatGPT-Micro-Cap-Experiment:
+The system has been completely rewritten to address the issues in the original:
 - ✅ Fixed stock price accuracy with multiple data validation
 - ✅ Replaced OpenAI API with Perplexity API for better financial data
 - ✅ Added robust error handling and logging
