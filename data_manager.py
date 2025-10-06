@@ -2,27 +2,18 @@
 Enhanced Data Management System for AI Trading
 Handles multiple data sources, validation, and accuracy checking
 """
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
+import requests
 from dataclasses import dataclass
 from loguru import logger
-import requests
-import csv
-from io import StringIO
-from pathlib import Path
+import time
 from config import get_config
 
 config = get_config()
-
-# Static fallback list of vetted micro-cap symbols (expand as needed)
-PRODUCTION_MICRO_CAPS = [
-    "HOFT", "RGCO", "EBMT", "OVLY", "TSBK", "NWFL", "PINE", "SAMG", "HRZN", "EARN",
-    "PFSW", "MRTN", "TOWN", "HWBK", "PFBC", "CCBG", "NECB", "WASH", "PBHC", "HAFC"
-]
 
 @dataclass
 class StockData:
@@ -51,6 +42,10 @@ class DataValidator:
 
     @staticmethod
     def validate_price_consistency(prices: Dict[str, float], tolerance: float = 0.05) -> bool:
+        """
+        Validate price consistency across multiple sources
+        Returns True if prices are within tolerance percentage
+        """
         if len(prices) < 2:
             return True
 
@@ -67,10 +62,12 @@ class DataValidator:
 
     @staticmethod
     def validate_market_hours() -> bool:
+        """Check if market is open"""
         now = datetime.now()
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
 
+        # Check if it's a weekday and within market hours
         is_weekday = now.weekday() < 5  # 0-4 are Mon-Fri
         is_market_hours = market_open <= now <= market_close
 
@@ -79,27 +76,50 @@ class DataValidator:
 class EnhancedDataManager:
     """Enhanced data manager with multiple sources and validation"""
 
-    ETF_HOLDINGS_CACHE = Path("data/etf_holdings_microcap.csv")
-    ETF_HOLDINGS_URL = "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
-
     def __init__(self):
         self.validator = DataValidator()
         self.cache = {}
         self.cache_expiry = timedelta(minutes=5)
 
     def get_stock_data(self, symbol: str, validate: bool = True) -> Optional[StockData]:
+        """
+        Get comprehensive stock data with validation
+
+        Args:
+            symbol: Stock symbol
+            validate: Whether to validate across multiple sources
+
+        Returns:
+            StockData object or None if data unavailable
+        """
         try:
+            # Check cache first
             cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}"
             if cache_key in self.cache:
                 cache_time, data = self.cache[cache_key]
                 if datetime.now() - cache_time < self.cache_expiry:
                     return data
 
+            # Get primary data from Yahoo Finance
             primary_data = self._get_yahoo_data(symbol)
             if not primary_data:
                 logger.error(f"Failed to get primary data for {symbol}")
                 return None
 
+            # Validate with additional sources if requested
+            if validate:
+                validation_prices = {'yahoo': primary_data['price']}
+
+                # Add backup sources for validation
+                backup_price = self._get_backup_price(symbol)
+                if backup_price:
+                    validation_prices['backup'] = backup_price
+
+                if not self.validator.validate_price_consistency(validation_prices):
+                    logger.warning(f"Price validation failed for {symbol}")
+                    # Continue with primary data but log the issue
+
+            # Create StockData object
             stock_data = StockData(
                 symbol=symbol,
                 price=primary_data['price'],
@@ -111,6 +131,7 @@ class EnhancedDataManager:
                 timestamp=datetime.now()
             )
 
+            # Cache the result
             self.cache[cache_key] = (datetime.now(), stock_data)
 
             return stock_data
@@ -120,10 +141,12 @@ class EnhancedDataManager:
             return None
 
     def _get_yahoo_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get data from Yahoo Finance"""
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
             hist = ticker.history(period="2d")
+
             if hist.empty:
                 return None
 
@@ -147,7 +170,50 @@ class EnhancedDataManager:
             logger.error(f"Error getting Yahoo Finance data for {symbol}: {e}")
             return None
 
+    def _get_backup_price(self, symbol: str) -> Optional[float]:
+        """Get price from backup source for validation"""
+        try:
+            # This is a placeholder for backup data source
+            # In production, you would integrate with Alpha Vantage, Finnhub, etc.
+            # For now, we'll add some noise to simulate a backup source
+            primary_price = self.cache.get(f"{symbol}_primary_price")
+            if primary_price:
+                # Simulate backup source with small random variation
+                noise = np.random.normal(0, 0.01)  # 1% standard deviation
+                return primary_price * (1 + noise)
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting backup price for {symbol}: {e}")
+            return None
+
+    def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Optional[StockData]]:
+        """Get data for multiple stocks efficiently"""
+        results = {}
+        for symbol in symbols:
+            results[symbol] = self.get_stock_data(symbol)
+            time.sleep(0.1)  # Rate limiting
+        return results
+
+    def get_market_data(self, symbols: List[str]) -> pd.DataFrame:
+        """Get market data as DataFrame for analysis"""
+        data = []
+        for symbol in symbols:
+            stock_data = self.get_stock_data(symbol)
+            if stock_data:
+                data.append({
+                    'symbol': stock_data.symbol,
+                    'price': stock_data.price,
+                    'volume': stock_data.volume,
+                    'market_cap': stock_data.market_cap,
+                    'change_percent': stock_data.change_percent,
+                    'timestamp': stock_data.timestamp
+                })
+
+        return pd.DataFrame(data)
+
     def get_historical_data(self, symbol: str, period: str = "1y") -> pd.DataFrame:
+        """Get historical data for backtesting and analysis"""
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period=period)
@@ -156,74 +222,22 @@ class EnhancedDataManager:
             logger.error(f"Error getting historical data for {symbol}: {e}")
             return pd.DataFrame()
 
-    def fetch_etf_holdings(self) -> List[str]:
-        try:
-            logger.info(f"Downloading ETF holdings from {self.ETF_HOLDINGS_URL} ...")
-            response = requests.get(self.ETF_HOLDINGS_URL, timeout=15)
-            response.raise_for_status()
-
-            self.ETF_HOLDINGS_CACHE.parent.mkdir(parents=True, exist_ok=True)
-            self.ETF_HOLDINGS_CACHE.write_text(response.text)
-            logger.info("ETF holdings downloaded and cached locally.")
-
-            tickers = self.parse_etf_csv(response.text)
-            logger.info(f"Parsed {len(tickers)} tickers from ETF holdings.")
-            return tickers
-
-        except Exception as e:
-            logger.error(f"Error downloading ETF holdings: {e}")
-            if self.ETF_HOLDINGS_CACHE.exists():
-                logger.info("Using cached ETF holdings due to download failure.")
-                return self.load_cached_etf_holdings()
-            else:
-                logger.warning("No cached ETF holdings available.")
-                return []
-
-    def parse_etf_csv(self, csv_text: str) -> List[str]:
-        tickers = []
-        try:
-            lines = csv_text.splitlines()
-            data_lines = "\n".join(lines[9:])  # Skip first 9 rows as headers start at line 10
-            f = StringIO(data_lines)
-            reader = csv.DictReader(f)
-            logger.info(f"[DEBUG] CSV headers found: {reader.fieldnames}")
-            for row in reader:
-                ticker = row.get("Holding Ticker") or row.get("Ticker") or row.get("Symbol") or row.get("Holdings Ticker")
-                if ticker and ticker.strip():
-                    tickers.append(ticker.strip().upper())
-        except Exception as e:
-            logger.error(f"Error parsing ETF CSV: {e}")
-        logger.info(f"[DEBUG] Parsed ETFs tickers count: {len(tickers)}")
-        return tickers
-
-    def load_cached_etf_holdings(self) -> List[str]:
-        try:
-            with open(self.ETF_HOLDINGS_CACHE, 'r') as f:
-                csv_text = f.read()
-            return self.parse_etf_csv(csv_text)
-        except Exception as e:
-            logger.error(f"Error loading cached ETF holdings: {e}")
-            return []
-
     def screen_micro_caps(self, min_volume: int = None) -> List[str]:
-        symbols = self.fetch_etf_holdings()
-        if not symbols:
-            logger.info("Using fallback static micro-cap list")
-            symbols = PRODUCTION_MICRO_CAPS
+        """Screen for micro-cap stocks meeting criteria"""
+        # This is a placeholder for micro-cap screening
+        # In production, you would implement proper screening logic
+        # using financial databases or APIs
 
-        filtered = []
-        for symbol in symbols:
-            try:
-                stock_data = self.get_stock_data(symbol, validate=False)
-                if stock_data and stock_data.is_micro_cap and stock_data.has_sufficient_volume:
-                    filtered.append(symbol)
-            except:
-                continue
+        sample_microcaps = [
+            'AAON', 'ABCB', 'ABEO', 'ABEQ', 'ABIO', 'ABUS', 'ACAD', 'ACET',
+            'ACIU', 'ACRX', 'ADAP', 'ADCT', 'ADMA', 'ADMS', 'ADPT', 'ADRO'
+        ]
 
-        return filtered
+        # Filter by volume and market cap
+        filtered_symbols = []
+        for symbol in sample_microcaps:
+            stock_data = self.get_stock_data(symbol, validate=False)
+            if stock_data and stock_data.is_micro_cap and stock_data.has_sufficient_volume:
+                filtered_symbols.append(symbol)
 
-    def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Optional[StockData]]:
-        results = {}
-        for symbol in symbols:
-            results[symbol] = self.get_stock_data(symbol)
-        return results
+        return filtered_symbols
