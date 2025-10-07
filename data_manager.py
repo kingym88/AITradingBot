@@ -2,18 +2,27 @@
 Enhanced Data Management System for AI Trading
 Handles multiple data sources, validation, and accuracy checking
 """
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
-import requests
 from dataclasses import dataclass
 from loguru import logger
 import time
+import requests
+import csv
+from pathlib import Path
 from config import get_config
 
 config = get_config()
+
+# Static fallback list of vetted micro-cap symbols (expand as needed)
+PRODUCTION_MICRO_CAPS = [
+    "HOFT", "RGCO", "EBMT", "OVLY", "TSBK", "NWFL", "PINE", "SAMG", "HRZN", "EARN",
+    "PFSW", "MRTN", "TOWN", "HWBK", "PFBC", "CCBG", "NECB", "WASH", "PBHC", "HAFC"
+]
 
 @dataclass
 class StockData:
@@ -76,6 +85,10 @@ class DataValidator:
 class EnhancedDataManager:
     """Enhanced data manager with multiple sources and validation"""
 
+    ETF_HOLDINGS_CACHE = Path("data/etf_holdings_microcap.csv")
+    # iShares Micro-Cap ETF holdings CSV URL
+    ETF_HOLDINGS_URL = "https://www.ishares.com/us/products/239710/ishares-micro-cap-etf/1467271812596.ajax?fileType=cv&fileName=IWC_holdings.csv"
+
     def __init__(self):
         self.validator = DataValidator()
         self.cache = {}
@@ -84,13 +97,6 @@ class EnhancedDataManager:
     def get_stock_data(self, symbol: str, validate: bool = True) -> Optional[StockData]:
         """
         Get comprehensive stock data with validation
-
-        Args:
-            symbol: Stock symbol
-            validate: Whether to validate across multiple sources
-
-        Returns:
-            StockData object or None if data unavailable
         """
         try:
             # Check cache first
@@ -105,19 +111,6 @@ class EnhancedDataManager:
             if not primary_data:
                 logger.error(f"Failed to get primary data for {symbol}")
                 return None
-
-            # Validate with additional sources if requested
-            if validate:
-                validation_prices = {'yahoo': primary_data['price']}
-
-                # Add backup sources for validation
-                backup_price = self._get_backup_price(symbol)
-                if backup_price:
-                    validation_prices['backup'] = backup_price
-
-                if not self.validator.validate_price_consistency(validation_prices):
-                    logger.warning(f"Price validation failed for {symbol}")
-                    # Continue with primary data but log the issue
 
             # Create StockData object
             stock_data = StockData(
@@ -170,48 +163,6 @@ class EnhancedDataManager:
             logger.error(f"Error getting Yahoo Finance data for {symbol}: {e}")
             return None
 
-    def _get_backup_price(self, symbol: str) -> Optional[float]:
-        """Get price from backup source for validation"""
-        try:
-            # This is a placeholder for backup data source
-            # In production, you would integrate with Alpha Vantage, Finnhub, etc.
-            # For now, we'll add some noise to simulate a backup source
-            primary_price = self.cache.get(f"{symbol}_primary_price")
-            if primary_price:
-                # Simulate backup source with small random variation
-                noise = np.random.normal(0, 0.01)  # 1% standard deviation
-                return primary_price * (1 + noise)
-            return None
-
-        except Exception as e:
-            logger.error(f"Error getting backup price for {symbol}: {e}")
-            return None
-
-    def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Optional[StockData]]:
-        """Get data for multiple stocks efficiently"""
-        results = {}
-        for symbol in symbols:
-            results[symbol] = self.get_stock_data(symbol)
-            time.sleep(0.1)  # Rate limiting
-        return results
-
-    def get_market_data(self, symbols: List[str]) -> pd.DataFrame:
-        """Get market data as DataFrame for analysis"""
-        data = []
-        for symbol in symbols:
-            stock_data = self.get_stock_data(symbol)
-            if stock_data:
-                data.append({
-                    'symbol': stock_data.symbol,
-                    'price': stock_data.price,
-                    'volume': stock_data.volume,
-                    'market_cap': stock_data.market_cap,
-                    'change_percent': stock_data.change_percent,
-                    'timestamp': stock_data.timestamp
-                })
-
-        return pd.DataFrame(data)
-
     def get_historical_data(self, symbol: str, period: str = "1y") -> pd.DataFrame:
         """Get historical data for backtesting and analysis"""
         try:
@@ -222,22 +173,86 @@ class EnhancedDataManager:
             logger.error(f"Error getting historical data for {symbol}: {e}")
             return pd.DataFrame()
 
+    def fetch_etf_holdings(self) -> List[str]:
+        """
+        Fetch and cache micro-cap ETF holdings dynamically from iShares ETF CSV.
+        Returns a list of ticker symbols.
+        """
+        try:
+            logger.info(f"Downloading ETF holdings from {self.ETF_HOLDINGS_URL} ...")
+            response = requests.get(self.ETF_HOLDINGS_URL, timeout=15)
+            response.raise_for_status()
+
+            self.ETF_HOLDINGS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            self.ETF_HOLDINGS_CACHE.write_text(response.text)
+            logger.info("ETF holdings downloaded and cached locally.")
+
+            tickers = self.parse_etf_csv(response.text)
+            logger.info(f"Parsed {len(tickers)} tickers from ETF holdings.")
+            return tickers
+
+        except Exception as e:
+            logger.error(f"Error downloading ETF holdings: {e}")
+            # Fallback to cached file if available
+            if self.ETF_HOLDINGS_CACHE.exists():
+                logger.info("Using cached ETF holdings due to download failure.")
+                return self.load_cached_etf_holdings()
+            else:
+                logger.warning("No cached ETF holdings available.")
+                return []
+
+    def parse_etf_csv(self, csv_text: str) -> List[str]:
+        """Parse tickers from ETF holdings CSV text."""
+        tickers = []
+        try:
+            reader = csv.DictReader(csv_text.splitlines())
+            for row in reader:
+                # Try multiple column names that iShares might use
+                ticker = (row.get("Holding Ticker") or 
+                         row.get("Ticker") or 
+                         row.get("Symbol") or 
+                         row.get("Holdings Ticker"))
+                if ticker and ticker.strip() and len(ticker.strip()) <= 5:
+                    tickers.append(ticker.strip().upper())
+        except Exception as e:
+            logger.error(f"Error parsing ETF CSV: {e}")
+        return tickers
+
+    def load_cached_etf_holdings(self) -> List[str]:
+        """Load ETF holdings from local cache file."""
+        try:
+            with open(self.ETF_HOLDINGS_CACHE, 'r') as f:
+                csv_text = f.read()
+            return self.parse_etf_csv(csv_text)
+        except Exception as e:
+            logger.error(f"Error loading cached ETF holdings: {e}")
+            return []
+
     def screen_micro_caps(self, min_volume: int = None) -> List[str]:
-        """Screen for micro-cap stocks meeting criteria"""
-        # This is a placeholder for micro-cap screening
-        # In production, you would implement proper screening logic
-        # using financial databases or APIs
+        """
+        Screen micro-caps dynamically by ETF holdings.
+        Falls back to static list if no holdings found.
+        """
+        symbols = self.fetch_etf_holdings()
+        if not symbols:
+            logger.info("Using fallback static micro-cap list")
+            symbols = PRODUCTION_MICRO_CAPS
 
-        sample_microcaps = [
-            'AAON', 'ABCB', 'ABEO', 'ABEQ', 'ABIO', 'ABUS', 'ACAD', 'ACET',
-            'ACIU', 'ACRX', 'ADAP', 'ADCT', 'ADMA', 'ADMS', 'ADPT', 'ADRO'
-        ]
+        filtered = []
+        for symbol in symbols:
+            try:
+                stock_data = self.get_stock_data(symbol, validate=False)
+                if stock_data and stock_data.is_micro_cap and stock_data.has_sufficient_volume:
+                    filtered.append(symbol)
+            except:
+                continue
 
-        # Filter by volume and market cap
-        filtered_symbols = []
-        for symbol in sample_microcaps:
-            stock_data = self.get_stock_data(symbol, validate=False)
-            if stock_data and stock_data.is_micro_cap and stock_data.has_sufficient_volume:
-                filtered_symbols.append(symbol)
+        return filtered
 
-        return filtered_symbols
+    def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Optional[StockData]]:
+        """Get data for multiple stocks efficiently"""
+        results = {}
+        for symbol in symbols:
+            results[symbol] = self.get_stock_data(symbol)
+            time.sleep(0.1)  # Rate limiting
+        return results
