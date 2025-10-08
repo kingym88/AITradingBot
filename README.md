@@ -1,5 +1,7 @@
 # Enhanced ML AI Trading System - Profit Optimized
 
+This is my attempt at using the info given by **https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment** to start my own trading experiment
+
 🚀 **Advanced Machine Learning + AI Trading Platform with Profitable Stock Analysis**
 
 A comprehensive trading system that combines **sophisticated profitability analysis** with Machine Learning models and Perplexity AI to provide intelligent stock recommendations based on current market conditions and profit potential.
