@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from loguru import logger
-import time
 import requests
 import csv
+from io import StringIO
 from pathlib import Path
 from config import get_config
 
@@ -51,10 +51,6 @@ class DataValidator:
 
     @staticmethod
     def validate_price_consistency(prices: Dict[str, float], tolerance: float = 0.05) -> bool:
-        """
-        Validate price consistency across multiple sources
-        Returns True if prices are within tolerance percentage
-        """
         if len(prices) < 2:
             return True
 
@@ -71,12 +67,10 @@ class DataValidator:
 
     @staticmethod
     def validate_market_hours() -> bool:
-        """Check if market is open"""
         now = datetime.now()
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
 
-        # Check if it's a weekday and within market hours
         is_weekday = now.weekday() < 5  # 0-4 are Mon-Fri
         is_market_hours = market_open <= now <= market_close
 
@@ -86,8 +80,7 @@ class EnhancedDataManager:
     """Enhanced data manager with multiple sources and validation"""
 
     ETF_HOLDINGS_CACHE = Path("data/etf_holdings_microcap.csv")
-    # iShares Micro-Cap ETF holdings CSV URL
-    ETF_HOLDINGS_URL = "https://www.ishares.com/us/products/239710/ishares-micro-cap-etf/1467271812596.ajax?fileType=cv&fileName=IWC_holdings.csv"
+    ETF_HOLDINGS_URL = "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
 
     def __init__(self):
         self.validator = DataValidator()
@@ -95,24 +88,18 @@ class EnhancedDataManager:
         self.cache_expiry = timedelta(minutes=5)
 
     def get_stock_data(self, symbol: str, validate: bool = True) -> Optional[StockData]:
-        """
-        Get comprehensive stock data with validation
-        """
         try:
-            # Check cache first
             cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}"
             if cache_key in self.cache:
                 cache_time, data = self.cache[cache_key]
                 if datetime.now() - cache_time < self.cache_expiry:
                     return data
 
-            # Get primary data from Yahoo Finance
             primary_data = self._get_yahoo_data(symbol)
             if not primary_data:
                 logger.error(f"Failed to get primary data for {symbol}")
                 return None
 
-            # Create StockData object
             stock_data = StockData(
                 symbol=symbol,
                 price=primary_data['price'],
@@ -124,7 +111,6 @@ class EnhancedDataManager:
                 timestamp=datetime.now()
             )
 
-            # Cache the result
             self.cache[cache_key] = (datetime.now(), stock_data)
 
             return stock_data
@@ -134,12 +120,10 @@ class EnhancedDataManager:
             return None
 
     def _get_yahoo_data(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get data from Yahoo Finance"""
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
             hist = ticker.history(period="2d")
-
             if hist.empty:
                 return None
 
@@ -164,7 +148,6 @@ class EnhancedDataManager:
             return None
 
     def get_historical_data(self, symbol: str, period: str = "1y") -> pd.DataFrame:
-        """Get historical data for backtesting and analysis"""
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period=period)
@@ -174,10 +157,6 @@ class EnhancedDataManager:
             return pd.DataFrame()
 
     def fetch_etf_holdings(self) -> List[str]:
-        """
-        Fetch and cache micro-cap ETF holdings dynamically from iShares ETF CSV.
-        Returns a list of ticker symbols.
-        """
         try:
             logger.info(f"Downloading ETF holdings from {self.ETF_HOLDINGS_URL} ...")
             response = requests.get(self.ETF_HOLDINGS_URL, timeout=15)
@@ -193,7 +172,6 @@ class EnhancedDataManager:
 
         except Exception as e:
             logger.error(f"Error downloading ETF holdings: {e}")
-            # Fallback to cached file if available
             if self.ETF_HOLDINGS_CACHE.exists():
                 logger.info("Using cached ETF holdings due to download failure.")
                 return self.load_cached_etf_holdings()
@@ -202,24 +180,23 @@ class EnhancedDataManager:
                 return []
 
     def parse_etf_csv(self, csv_text: str) -> List[str]:
-        """Parse tickers from ETF holdings CSV text."""
         tickers = []
         try:
-            reader = csv.DictReader(csv_text.splitlines())
+            lines = csv_text.splitlines()
+            data_lines = "\n".join(lines[9:])  # Skip first 9 rows as headers start at line 10
+            f = StringIO(data_lines)
+            reader = csv.DictReader(f)
+            logger.info(f"[DEBUG] CSV headers found: {reader.fieldnames}")
             for row in reader:
-                # Try multiple column names that iShares might use
-                ticker = (row.get("Holding Ticker") or 
-                         row.get("Ticker") or 
-                         row.get("Symbol") or 
-                         row.get("Holdings Ticker"))
-                if ticker and ticker.strip() and len(ticker.strip()) <= 5:
+                ticker = row.get("Holding Ticker") or row.get("Ticker") or row.get("Symbol") or row.get("Holdings Ticker")
+                if ticker and ticker.strip():
                     tickers.append(ticker.strip().upper())
         except Exception as e:
             logger.error(f"Error parsing ETF CSV: {e}")
+        logger.info(f"[DEBUG] Parsed ETFs tickers count: {len(tickers)}")
         return tickers
 
     def load_cached_etf_holdings(self) -> List[str]:
-        """Load ETF holdings from local cache file."""
         try:
             with open(self.ETF_HOLDINGS_CACHE, 'r') as f:
                 csv_text = f.read()
@@ -229,10 +206,6 @@ class EnhancedDataManager:
             return []
 
     def screen_micro_caps(self, min_volume: int = None) -> List[str]:
-        """
-        Screen micro-caps dynamically by ETF holdings.
-        Falls back to static list if no holdings found.
-        """
         symbols = self.fetch_etf_holdings()
         if not symbols:
             logger.info("Using fallback static micro-cap list")
@@ -250,9 +223,7 @@ class EnhancedDataManager:
         return filtered
 
     def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Optional[StockData]]:
-        """Get data for multiple stocks efficiently"""
         results = {}
         for symbol in symbols:
             results[symbol] = self.get_stock_data(symbol)
-            time.sleep(0.1)  # Rate limiting
         return results
