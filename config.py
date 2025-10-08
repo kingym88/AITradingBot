@@ -30,7 +30,7 @@ class TradingConfig(BaseSettings):
     MAX_POSITION_SIZE: float = 0.30  # 30% max per position
     STOP_LOSS_PERCENTAGE: float = 0.15  # 15% stop loss
     TAKE_PROFIT_PERCENTAGE: float = 0.25  # 25% take profit
-    MAX_MARKET_CAP: int = 300_000_000  # $300M for micro-caps
+    MAX_MARKET_CAP: int = 300_000_000_000_000  # $300M for micro-caps
 
     # Risk Management
     MAX_DAILY_LOSS: float = 0.05  # 5% max daily loss
