@@ -13,32 +13,32 @@ warnings.filterwarnings('ignore')
 from loguru import logger
 from config import get_config
 from database import get_db_manager
-from data_manager import EnhancedDataManager, PRODUCTION_MICRO_CAPS
+from data_manager import EnhancedDataManager
 
 config = get_config()
 
 class ProfitabilityAnalyzer:
     """Advanced analyzer for determining most profitable stock opportunities"""
-    
+
     def __init__(self, data_manager: EnhancedDataManager):
         self.data_manager = data_manager
-    
+
     def analyze_profitability(self, symbol: str) -> Optional[Dict[str, Any]]:
         try:
             stock_data = self.data_manager.get_stock_data(symbol, validate=False)
             if not stock_data:
                 return None
-            
+
             hist_data = self.data_manager.get_historical_data(symbol, period="6mo")
-            if hist_data.empty or len(hist_data) < 50:
+            if hist_data is None or hist_data.empty or len(hist_data) < 50:
                 return None
-            
+
             technical_score = self._calculate_technical_score(hist_data, stock_data)
             momentum_score = self._calculate_momentum_score(hist_data)
             value_score = self._calculate_value_score(stock_data, hist_data)
             volume_score = self._calculate_volume_score(hist_data, stock_data)
             volatility_score = self._calculate_volatility_score(hist_data)
-            
+
             composite_score = (
                 technical_score * 0.25 +
                 momentum_score * 0.25 +
@@ -46,7 +46,7 @@ class ProfitabilityAnalyzer:
                 volume_score * 0.15 +
                 volatility_score * 0.15
             )
-            
+
             return {
                 'symbol': symbol,
                 'composite_score': composite_score,
@@ -60,11 +60,12 @@ class ProfitabilityAnalyzer:
                 'confidence': min(composite_score, 0.95),
                 'reasoning': self._generate_reasoning(symbol, technical_score, momentum_score, value_score)
             }
-            
         except Exception as e:
             logger.error(f"Error analyzing profitability for {symbol}: {e}")
             return None
-    
+
+    # ... scoring/internal methods identical to your snippet, keep unchanged ...
+
     def _calculate_technical_score(self, hist_data: pd.DataFrame, stock_data) -> float:
         try:
             delta = hist_data['Close'].diff()
@@ -73,7 +74,7 @@ class ProfitabilityAnalyzer:
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             current_rsi = rsi.iloc[-1]
-            
+
             if current_rsi < 30:
                 rsi_score = 0.9
             elif current_rsi < 40:
@@ -82,63 +83,57 @@ class ProfitabilityAnalyzer:
                 rsi_score = 0.2
             else:
                 rsi_score = 0.5
-            
+
             sma_20 = hist_data['Close'].rolling(window=20).mean().iloc[-1]
             sma_50 = hist_data['Close'].rolling(window=50).mean().iloc[-1]
             current_price = stock_data.price
-            
+
             if current_price > sma_20 > sma_50:
                 ma_score = 0.8
             elif current_price < sma_20 < sma_50 and current_price < sma_50 * 0.95:
                 ma_score = 0.7
             else:
                 ma_score = 0.4
-            
+
             recent_high = hist_data['High'].rolling(window=20).max().iloc[-1]
             recent_low = hist_data['Low'].rolling(window=20).min().iloc[-1]
             price_position = (current_price - recent_low) / (recent_high - recent_low)
-            
             if price_position < 0.3:
                 support_score = 0.8
             elif price_position > 0.8:
                 support_score = 0.3
             else:
                 support_score = 0.5
-            
+
             return np.mean([rsi_score, ma_score, support_score])
         except Exception as e:
             logger.error(f"Error calculating technical score: {e}")
             return 0.5
-    
+
     def _calculate_momentum_score(self, hist_data: pd.DataFrame) -> float:
         try:
             current_price = hist_data['Close'].iloc[-1]
             momentum_5d = (current_price / hist_data['Close'].iloc[-6] - 1) if len(hist_data) > 5 else 0
             momentum_20d = (current_price / hist_data['Close'].iloc[-21] - 1) if len(hist_data) > 20 else 0
-            
             avg_volume_20d = hist_data['Volume'].tail(20).mean()
             recent_volume_5d = hist_data['Volume'].tail(5).mean()
             volume_momentum = recent_volume_5d / avg_volume_20d if avg_volume_20d > 0 else 1
-            
             momentum_score = 0.5
             if momentum_5d > 0.02:
                 momentum_score += 0.2
             elif momentum_5d < -0.05:
                 momentum_score += 0.1
-            
             if momentum_20d > 0.05:
                 momentum_score += 0.15
             elif momentum_20d < -0.15:
                 momentum_score += 0.1
-            
             if volume_momentum > 1.5:
                 momentum_score += 0.15
-            
             return min(momentum_score, 1.0)
         except Exception as e:
             logger.error(f"Error calculating momentum score: {e}")
             return 0.5
-    
+
     def _calculate_value_score(self, stock_data, hist_data: pd.DataFrame) -> float:
         try:
             current_price = stock_data.price
@@ -154,22 +149,18 @@ class ProfitabilityAnalyzer:
                     value_score = 0.5
             else:
                 value_score = 0.5
-            
             if stock_data.market_cap and stock_data.market_cap < 100_000_000:
                 value_score += 0.1
-            
             return min(value_score, 1.0)
         except Exception as e:
             logger.error(f"Error calculating value score: {e}")
             return 0.5
-    
+
     def _calculate_volume_score(self, hist_data: pd.DataFrame, stock_data) -> float:
         try:
             avg_volume_30d = hist_data['Volume'].tail(30).mean()
             current_volume = stock_data.volume
-            
             volume_ratio = current_volume / avg_volume_30d if avg_volume_30d > 0 else 1
-            
             if volume_ratio > 2.0:
                 volume_score = 0.9
             elif volume_ratio > 1.5:
@@ -178,15 +169,13 @@ class ProfitabilityAnalyzer:
                 volume_score = 0.3
             else:
                 volume_score = 0.5
-            
             if avg_volume_30d < config.MIN_VOLUME:
                 volume_score *= 0.5
-            
             return volume_score
         except Exception as e:
             logger.error(f"Error calculating volume score: {e}")
             return 0.5
-    
+
     def _calculate_volatility_score(self, hist_data: pd.DataFrame) -> float:
         try:
             returns = hist_data['Close'].pct_change().dropna()
@@ -203,12 +192,12 @@ class ProfitabilityAnalyzer:
         except Exception as e:
             logger.error(f"Error calculating volatility score: {e}")
             return 0.5
-    
+
     def _estimate_expected_return(self, composite_score: float) -> float:
         base_return = 0.05
         bonus_return = (composite_score - 0.5) * 0.4
         return max(0.02, base_return + bonus_return)
-    
+
     def _generate_reasoning(self, symbol: str, technical_score: float, momentum_score: float, value_score: float) -> str:
         reasons = []
         if technical_score > 0.7:
@@ -226,6 +215,7 @@ class ProfitabilityAnalyzer:
         if not reasons:
             reasons.append("balanced risk-reward profile")
         return f"Selected {symbol} based on: " + ", ".join(reasons) + " with profit potential analysis."
+
 
 class MLRecommendationEngine:
     def __init__(self):
@@ -342,18 +332,12 @@ class MLRecommendationEngine:
 
     def _get_candidate_stocks(self) -> List[str]:
         try:
-            candidates = self.data_manager.fetch_etf_holdings()
+            # Use dynamic GitHub universe from EnhancedDataManager!
+            candidates = self.data_manager.screen_micro_caps()  # Returns a filtered dynamic list
             if not candidates:
-                candidates = PRODUCTION_MICRO_CAPS
-
-            filtered_candidates = []
-            for symbol in candidates:
-                stock_data = self.data_manager.get_stock_data(symbol, validate=False)
-                if stock_data and stock_data.is_micro_cap and stock_data.has_sufficient_volume:
-                    filtered_candidates.append(symbol)
-
-            return filtered_candidates[:50]
-
+                logger.warning("No candidates found via GitHub universe.")
+                return []
+            return candidates[:50]
         except Exception as e:
             logger.error(f"Error getting candidate stocks: {e}")
             return []
