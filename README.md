@@ -24,8 +24,8 @@ A comprehensive trading system that combines **sophisticated profitability analy
   - Price positioning vs recent ranges
   - Expected return potential
 
-### 🔄 **Dynamic ETF Holdings Integration**
-- Downloads live micro-cap ETF holdings (iShares IWC)
+### 🔄 **NYSE, NASDAQ & NYSE Integration**
+- Uses previous day market close (Midnight EST) for stocks in exchanges
 - Always uses **current, institutional-quality** stock universe
 - Falls back to vetted static list if download fails
 
