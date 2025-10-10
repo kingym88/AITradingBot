@@ -224,7 +224,7 @@ class EnhancedDataManager:
             if max_market_cap is None:
                 max_market_cap = config.MAX_MARKET_CAP
             logger.info("📡 Screening stocks from GitHub sources (NASDAQ, NYSE, AMEX)...")
-            symbols = self.github_manager.get_stock_symbols(limit=100)
+            symbols = self.github_manager.get_stock_symbols(limit=None)
             if not symbols:
                 logger.warning("No symbols retrieved from GitHub sources")
                 return []
