@@ -73,7 +73,7 @@ A comprehensive trading system that combines **sophisticated profitability analy
 ### After (This Enhanced System):
 - **Live profitability analysis** of current market conditions
 - **Multi-factor scoring** (technical, momentum, value, volume)
-- **Dynamic stock universe** from institutional ETF holdings
+- **NYSE, NASDAQ & NYSE Integration** yfinance for live pricing
 - **Composite profitability scores** ranking best opportunities
 - **Expected return estimates** for each recommendation
 
@@ -103,7 +103,7 @@ A comprehensive trading system that combines **sophisticated profitability analy
 ## 📋 Complete System Includes
 
 - **Enhanced ML Engine** with profitability analysis
-- **Dynamic ETF Holdings** fetching (iShares IWC)
+- **NYSE, NASDAQ & NYSE Integration** yfinance for live pricing 
 - **Technical Analysis** (RSI, momentum, volume, value scoring)
 - **Interactive Trade Logger** for ML learning
 - **Weekend Analysis** system for comprehensive review
