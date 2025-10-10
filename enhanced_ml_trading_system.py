@@ -1,11 +1,10 @@
-# Updated Enhanced AI Trading System with Portfolio Value Tracking
-
 """
-Enhanced AI Trading System with Machine Learning and Portfolio Value Tracking
-Main application integrating ML recommendations, trade logging, and weekend analysis
-UPDATED: Now properly tracks portfolio values after trades and calculates from actual trade history
+Updated Enhanced AI Trading System with GitHub Stock Symbol Sources
+UPDATED: Now uses AMEX, NASDAQ & NYSE JSON files from GitHub instead of iShares ETF data
 """
 import sys
+import json
+import requests
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 import pandas as pd
@@ -28,6 +27,188 @@ from database import get_db_manager, Position, Trade, AIRecommendation
 from ml_engine import MLRecommendationEngine
 from weekend_analyzer import WeekendAnalyzer
 from performance_analyzer import PerformanceAnalyzer
+
+class GitHubStockDataManager:
+    """Manages stock symbol data from GitHub JSON sources"""
+    
+    def __init__(self):
+        self.github_urls = {
+            'NASDAQ': 'https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_full_tickers.json',
+            'NYSE': 'https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nyse/nyse_full_tickers.json',
+            'AMEX': 'https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/amex/amex_full_tickers.json'
+        }
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'AI-Trading-Bot/1.0'
+        })
+
+    def fetch_exchange_stocks(self, exchange: str) -> List[Dict]:
+        """Fetch stock data from specific exchange JSON file"""
+        try:
+            if exchange not in self.github_urls:
+                raise ValueError(f"Unknown exchange: {exchange}")
+            
+            url = self.github_urls[exchange]
+            logger.info(f"Fetching {exchange} stocks from GitHub: {url}")
+            
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+            
+            stocks = response.json()
+            logger.info(f"Successfully fetched {len(stocks)} {exchange} stocks")
+            
+            return stocks
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching {exchange} stocks: {e}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing {exchange} JSON: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching {exchange} stocks: {e}")
+            return []
+
+    def fetch_all_stocks(self) -> List[Dict]:
+        """Fetch stocks from all exchanges (NASDAQ, NYSE, AMEX)"""
+        all_stocks = []
+        
+        for exchange in self.github_urls.keys():
+            exchange_stocks = self.fetch_exchange_stocks(exchange)
+            # Add exchange info to each stock
+            for stock in exchange_stocks:
+                stock['exchange'] = exchange
+            all_stocks.extend(exchange_stocks)
+        
+        logger.info(f"Total stocks fetched from all exchanges: {len(all_stocks)}")
+        return all_stocks
+
+    def filter_stocks_for_analysis(self, stocks: List[Dict], max_market_cap: int = None) -> List[Dict]:
+        """Filter stocks based on trading criteria"""
+        try:
+            if max_market_cap is None:
+                max_market_cap = config.MAX_MARKET_CAP
+            
+            filtered_stocks = []
+            
+            for stock in stocks:
+                try:
+                    # Skip stocks without proper data
+                    if not stock.get('symbol') or not stock.get('marketCap'):
+                        continue
+                    
+                    # Parse market cap (remove commas and convert to float)
+                    market_cap_str = str(stock.get('marketCap', '0')).replace(',', '')
+                    try:
+                        market_cap = float(market_cap_str)
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # Skip stocks with zero or invalid market cap
+                    if market_cap <= 0:
+                        continue
+                    
+                    # Filter by market cap if specified
+                    if max_market_cap and market_cap > max_market_cap:
+                        continue
+                    
+                    # Parse volume
+                    try:
+                        volume = int(str(stock.get('volume', '0')).replace(',', ''))
+                    except (ValueError, TypeError):
+                        volume = 0
+                    
+                    # Filter by minimum volume
+                    if volume < config.MIN_VOLUME:
+                        continue
+                    
+                    # Skip certain types of securities
+                    name = stock.get('name', '').lower()
+                    if any(term in name for term in ['warrant', 'rights', 'unit', 'preferred']):
+                        continue
+                    
+                    # Skip blank check companies and SPACs
+                    industry = stock.get('industry', '').lower()
+                    if 'blank check' in industry:
+                        continue
+                    
+                    # Only include US stocks by default
+                    country = stock.get('country', '')
+                    if country and country != 'United States':
+                        continue
+                    
+                    filtered_stocks.append(stock)
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing stock {stock.get('symbol', 'UNKNOWN')}: {e}")
+                    continue
+            
+            logger.info(f"Filtered to {len(filtered_stocks)} qualifying stocks")
+            return filtered_stocks
+            
+        except Exception as e:
+            logger.error(f"Error filtering stocks: {e}")
+            return []
+
+    def get_stock_symbols(self, limit: int = None) -> List[str]:
+        """Get list of stock symbols for analysis"""
+        try:
+            all_stocks = self.fetch_all_stocks()
+            filtered_stocks = self.filter_stocks_for_analysis(all_stocks)
+            
+            # Sort by market cap (largest first) then by volume
+            filtered_stocks.sort(key=lambda x: (
+                float(str(x.get('marketCap', '0')).replace(',', '') or 0),
+                int(str(x.get('volume', '0')).replace(',', '') or 0)
+            ), reverse=True)
+            
+            symbols = [stock['symbol'] for stock in filtered_stocks]
+            
+            if limit:
+                symbols = symbols[:limit]
+            
+            logger.info(f"Returning {len(symbols)} stock symbols for analysis")
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"Error getting stock symbols: {e}")
+            return []
+
+    def get_stocks_by_sector(self, sector: str) -> List[Dict]:
+        """Get stocks filtered by sector"""
+        try:
+            all_stocks = self.fetch_all_stocks()
+            filtered_stocks = self.filter_stocks_for_analysis(all_stocks)
+            
+            sector_stocks = [
+                stock for stock in filtered_stocks 
+                if stock.get('sector', '').lower() == sector.lower()
+            ]
+            
+            logger.info(f"Found {len(sector_stocks)} stocks in {sector} sector")
+            return sector_stocks
+            
+        except Exception as e:
+            logger.error(f"Error getting stocks by sector {sector}: {e}")
+            return []
+
+    def get_stocks_by_industry(self, industry: str) -> List[Dict]:
+        """Get stocks filtered by industry"""
+        try:
+            all_stocks = self.fetch_all_stocks()
+            filtered_stocks = self.filter_stocks_for_analysis(all_stocks)
+            
+            industry_stocks = [
+                stock for stock in filtered_stocks 
+                if industry.lower() in stock.get('industry', '').lower()
+            ]
+            
+            logger.info(f"Found {len(industry_stocks)} stocks in {industry} industry")
+            return industry_stocks
+            
+        except Exception as e:
+            logger.error(f"Error getting stocks by industry {industry}: {e}")
+            return []
 
 class RiskManager:
     """Enhanced risk management system"""
@@ -290,144 +471,31 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"Error updating trade portfolio value: {e}")
 
-# Updated TradeLogger class
-class TradeLogger:
-    def __init__(self):
-        self.db_manager = get_db_manager()
-        self.data_manager = EnhancedDataManager()
-        self.portfolio_manager = PortfolioManager()
-
-    def log_trade_interactive(self) -> bool:
-        """Interactive trade logging with portfolio update"""
-        try:
-            print("\n" + "="*50)
-            print("📝 TRADE LOGGING SYSTEM")
-            print("="*50)
-
-            symbol = input("Stock Symbol (e.g., AAPL): ").strip().upper()
-            if not symbol:
-                print("❌ Symbol is required")
-                return False
-
-            stock_data = self.data_manager.get_stock_data(symbol, validate=False)
-            if stock_data:
-                print(f"✅ Current price for {symbol}: ${stock_data.price:.2f}")
-
-            while True:
-                action = input("Action (BUY/SELL): ").strip().upper()
-                if action in ['BUY', 'SELL']:
-                    break
-                print("❌ Please enter BUY or SELL")
-
-            while True:
-                try:
-                    quantity = int(input("Quantity (number of shares): ").strip())
-                    if quantity > 0:
-                        break
-                    else:
-                        print("❌ Quantity must be positive")
-                except ValueError:
-                    print("❌ Please enter a valid number")
-
-            while True:
-                try:
-                    price_input = input(f"Price per share (current: ${stock_data.price:.2f} if available): ").strip()
-                    if not price_input and stock_data:
-                        price = stock_data.price
-                        print(f"Using current market price: ${price:.2f}")
-                        break
-                    else:
-                        price = float(price_input)
-                        if price > 0:
-                            break
-                        else:
-                            print("❌ Price must be positive")
-                except ValueError:
-                    print("❌ Please enter a valid price")
-
-            reasoning = input("Reasoning (optional): ").strip()
-            if not reasoning:
-                reasoning = f"Manual {action.lower()} entry"
-
-            confidence_input = input("Confidence (0-1, optional): ").strip()
-            confidence = None
-            if confidence_input:
-                try:
-                    confidence = float(confidence_input)
-                    confidence = max(0, min(1, confidence))
-                except ValueError:
-                    confidence = None
-
-            # Show current portfolio
-            current_portfolio = self.portfolio_manager.get_portfolio_summary()
-            print(f"\n💰 Current Portfolio Value: ${current_portfolio['total_value']:.2f}")
-            print(f"💵 Available Cash: ${current_portfolio['cash']:.2f}")
-
-            print("\n" + "-"*30)
-            print("📋 TRADE SUMMARY:")
-            print("-"*30)
-            print(f"Symbol: {symbol}")
-            print(f"Action: {action}")
-            print(f"Quantity: {quantity:,}")
-            print(f"Price: ${price:.2f}")
-            print(f"Total: ${quantity * price:.2f}")
-            print(f"Reasoning: {reasoning}")
-            if confidence:
-                print(f"Confidence: {confidence:.2f}")
-
-            confirm = input("\nConfirm this trade? (y/n): ").strip().lower()
-            if confirm in ['y', 'yes']:
-                success, message = self.portfolio_manager.execute_trade(
-                    symbol, action, quantity, price, reasoning, confidence
-                )
-                if success:
-                    print(f"✅ {message}")
-                    
-                    # Show updated portfolio
-                    updated_portfolio = self.portfolio_manager.get_portfolio_summary()
-                    print(f"\n📊 Updated Portfolio Value: ${updated_portfolio['total_value']:.2f}")
-                    print(f"💵 Cash Remaining: ${updated_portfolio['cash']:.2f}")
-                    print(f"📈 Total Return: {updated_portfolio['total_return']:.2f}%")
-                    
-                    return True
-                else:
-                    print(f"❌ {message}")
-                    return False
-            else:
-                print("❌ Trade cancelled")
-                return False
-
-        except KeyboardInterrupt:
-            print("\n❌ Trade logging cancelled")
-            return False
-        except Exception as e:
-            logger.error(f"Error in interactive trade logging: {e}")
-            print(f"❌ Error: {e}")
-            return False
-
 class EnhancedMLTradingSystem:
-    """Main enhanced ML trading system with proper portfolio tracking"""
+    """Main enhanced ML trading system with GitHub stock data sources"""
 
     def __init__(self):
         self.config = config
         self.portfolio_manager = PortfolioManager()
         self.data_manager = EnhancedDataManager()
+        self.github_stock_manager = GitHubStockDataManager()  # NEW: GitHub stock data manager
         self.ai_client = PerplexityClientSync()
         self.ml_engine = MLRecommendationEngine()
         self.risk_manager = RiskManager()
         self.db_manager = get_db_manager()
-        self.trade_logger = TradeLogger()
         self.weekend_analyzer = WeekendAnalyzer()
 
-        logger.info("Enhanced ML Trading System with Portfolio Tracking initialized")
+        logger.info("Enhanced ML Trading System with GitHub Stock Sources initialized")
 
     def run_daily_update(self) -> None:
         try:
-            logger.info("🚀 Starting daily update with profitable stock analysis...")
+            logger.info("🚀 Starting daily update with GitHub stock analysis...")
 
             # Get updated portfolio data from actual trades
             portfolio_data = self.portfolio_manager.get_portfolio_summary()
-            market_data = self._get_market_data()
+            
+            # NEW: Get market data from GitHub sources instead of iShares
+            market_data = self._get_market_data_from_github()
 
             logger.info("🧠 Training ML models from recent trades...")
             self.ml_engine.learn_from_trades()
@@ -450,6 +518,48 @@ class EnhancedMLTradingSystem:
         except Exception as e:
             logger.error(f"Error in daily update: {e}")
 
+    def _get_market_data_from_github(self) -> Dict[str, Any]:
+        """NEW: Get market data from GitHub stock sources instead of iShares"""
+        try:
+            logger.info("📡 Fetching fresh stock data from GitHub sources...")
+            
+            # Get stock symbols from GitHub (fresh data each time)
+            stock_symbols = self.github_stock_manager.get_stock_symbols(limit=50)
+            
+            if not stock_symbols:
+                logger.warning("No stock symbols retrieved from GitHub sources")
+                return {'market_open': False, 'sentiment': 'Neutral', 'candidates': []}
+            
+            market_data = {
+                'market_open': self.data_manager.validator.validate_market_hours(),
+                'sentiment': 'Neutral',
+                'candidates': [],
+                'total_symbols_available': len(stock_symbols)
+            }
+
+            # Get current price data for top symbols using yfinance
+            logger.info(f"🔍 Getting current prices for top {min(10, len(stock_symbols))} symbols...")
+            for symbol in stock_symbols[:10]:
+                try:
+                    stock_data = self.data_manager.get_stock_data(symbol, validate=False)
+                    if stock_data:
+                        market_data['candidates'].append({
+                            'symbol': stock_data.symbol,
+                            'price': stock_data.price,
+                            'volume': stock_data.volume,
+                            'change_percent': stock_data.change_percent
+                        })
+                except Exception as e:
+                    logger.debug(f"Error getting price data for {symbol}: {e}")
+                    continue
+
+            logger.info(f"✅ Retrieved price data for {len(market_data['candidates'])} stocks")
+            return market_data
+
+        except Exception as e:
+            logger.error(f"Error getting market data from GitHub: {e}")
+            return {'market_open': False, 'sentiment': 'Neutral', 'candidates': []}
+
     def run_weekend_analysis(self) -> None:
         try:
             logger.info("🔍 Starting weekend deep analysis...")
@@ -463,32 +573,6 @@ class EnhancedMLTradingSystem:
 
         except Exception as e:
             logger.error(f"Error in weekend analysis: {e}")
-
-    def _get_market_data(self) -> Dict[str, Any]:
-        try:
-            candidates = self.data_manager.screen_micro_caps()
-
-            market_data = {
-                'market_open': self.data_manager.validator.validate_market_hours(),
-                'sentiment': 'Neutral',
-                'candidates': []
-            }
-
-            for symbol in candidates[:10]:
-                stock_data = self.data_manager.get_stock_data(symbol, validate=False)
-                if stock_data:
-                    market_data['candidates'].append({
-                        'symbol': stock_data.symbol,
-                        'price': stock_data.price,
-                        'volume': stock_data.volume,
-                        'change_percent': stock_data.change_percent
-                    })
-
-            return market_data
-
-        except Exception as e:
-            logger.error(f"Error getting market data: {e}")
-            return {'market_open': False, 'sentiment': 'Neutral', 'candidates': []}
 
     def _combine_recommendations(self, ml_recs: List[Dict], ai_recs: List[TradingRecommendation]) -> List[Dict]:
         try:
@@ -529,14 +613,14 @@ class EnhancedMLTradingSystem:
     def _display_recommendations(self, recommendations: List[Dict], portfolio_data: Dict) -> None:
         try:
             print("\n" + "="*80)
-            print("🚀 ENHANCED ML AI TRADING SYSTEM - PROFITABLE STOCK RECOMMENDATIONS")
+            print("🚀 ENHANCED ML AI TRADING SYSTEM - GITHUB STOCK ANALYSIS")
             print("="*80)
 
             if not recommendations:
                 print("❌ No recommendations generated today.")
                 print("This could be due to:")
-                print("  • ETF holdings download issues")
-                print("  • No qualifying micro-cap stocks found")
+                print("  • GitHub stock data download issues")
+                print("  • No qualifying stocks found")
                 print("  • Market data unavailable")
                 print("\n💡 Try running the system again or check your internet connection.")
                 return
@@ -550,7 +634,7 @@ class EnhancedMLTradingSystem:
                     print(f"   {symbol}: {quantity} shares")
             
             print()
-            print("🎯 PROFIT-OPTIMIZED RECOMMENDATIONS (Based on Current Market Analysis):")
+            print("🎯 RECOMMENDATIONS (Based on NASDAQ, NYSE & AMEX Analysis):")
             print("-" * 80)
 
             for i, rec in enumerate(recommendations, 1):
@@ -578,11 +662,11 @@ class EnhancedMLTradingSystem:
                 self._save_recommendation(rec)
 
             print("="*80)
-            print("💡 These are AI-generated recommendations based on:")
-            print("  📊 Technical analysis (RSI, momentum, support/resistance)")
-            print("  📈 Volume and price action analysis")
-            print("  💰 Value opportunity assessment")
-            print("  🎯 Risk-adjusted profit potential")
+            print("💡 Stock recommendations now based on:")
+            print("  📊 Fresh data from NASDAQ, NYSE & AMEX exchanges")
+            print("  🔄 Updated daily from GitHub sources")
+            print("  📈 Technical analysis and volume patterns")
+            print("  💰 Market cap and liquidity filtering")
             print("\n📝 Use Trade Logger to record your actual trades for ML learning!")
             print("📅 Run Weekend Analysis for comprehensive portfolio review.")
 
@@ -626,24 +710,63 @@ class EnhancedMLTradingSystem:
         except Exception as e:
             logger.error(f"Error displaying weekend analysis: {e}")
 
+    def show_github_stock_stats(self) -> None:
+        """NEW: Show statistics about GitHub stock data sources"""
+        try:
+            print("\n" + "="*60)
+            print("📊 GITHUB STOCK DATA SOURCES STATUS")
+            print("="*60)
+            
+            for exchange in ['NASDAQ', 'NYSE', 'AMEX']:
+                try:
+                    stocks = self.github_stock_manager.fetch_exchange_stocks(exchange)
+                    print(f"{exchange}: {len(stocks)} stocks available")
+                    
+                    if stocks:
+                        # Show some stats
+                        sectors = {}
+                        countries = {}
+                        for stock in stocks[:100]:  # Sample first 100
+                            sector = stock.get('sector', 'Unknown')
+                            country = stock.get('country', 'Unknown')
+                            sectors[sector] = sectors.get(sector, 0) + 1
+                            countries[country] = countries.get(country, 0) + 1
+                        
+                        print(f"  Top sectors: {', '.join(list(sectors.keys())[:3])}")
+                        print(f"  Countries: {', '.join(list(countries.keys())[:3])}")
+                except Exception as e:
+                    print(f"{exchange}: Error fetching data - {e}")
+            
+            # Test filtering
+            try:
+                filtered_symbols = self.github_stock_manager.get_stock_symbols(limit=10)
+                print(f"\nFiltered symbols for analysis: {len(filtered_symbols)}")
+                print(f"Sample symbols: {', '.join(filtered_symbols[:5])}")
+            except Exception as e:
+                print(f"Error testing filtering: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error showing GitHub stock stats: {e}")
+
     def run_interactive_mode(self) -> None:
-        logger.info("🚀 Starting Enhanced ML Trading System...")
+        logger.info("🚀 Starting Enhanced ML Trading System with GitHub Sources...")
 
         while True:
             try:
                 print("\n" + "="*70)
-                print("🚀 ENHANCED ML AI TRADING SYSTEM - PROFIT OPTIMIZED")
+                print("🚀 ENHANCED ML AI TRADING SYSTEM - GITHUB STOCK SOURCES")
                 print("="*70)
-                print("1. 📈 Daily Update & Profitable Stock Recommendations")
+                print("1. 📈 Daily Update & Stock Recommendations")
                 print("2. 📊 Portfolio Summary")
-                print("3. 📝 Trade Logger (Essential for ML Learning)")
+                print("3. 📝 Trade Logger")
                 print("4. 🔍 Weekend Deep Analysis")
                 print("5. 📉 Performance Report")
                 print("6. 🤖 ML Model Status")
-                print("7. ⚙️ System Settings")
-                print("8. 🚪 Exit")
+                print("7. 📡 GitHub Stock Data Status")
+                print("8. ⚙️ System Settings")
+                print("9. 🚪 Exit")
 
-                choice = input("\nSelect option (1-8): ").strip()
+                choice = input("\nSelect option (1-9): ").strip()
 
                 if choice == '1':
                     self.run_daily_update()
@@ -653,6 +776,7 @@ class EnhancedMLTradingSystem:
                     self._display_portfolio_summary(portfolio)
 
                 elif choice == '3':
+                    from trade_logger import run_trade_logging_interface
                     run_trade_logging_interface()
 
                 elif choice == '4':
@@ -669,14 +793,17 @@ class EnhancedMLTradingSystem:
                     self.show_ml_model_status()
 
                 elif choice == '7':
-                    self._show_system_settings()
+                    self.show_github_stock_stats()
 
                 elif choice == '8':
+                    self._show_system_settings()
+
+                elif choice == '9':
                     logger.info("👋 Exiting Enhanced ML Trading System...")
                     break
 
                 else:
-                    print("❌ Invalid option. Please select 1-8.")
+                    print("❌ Invalid option. Please select 1-9.")
 
             except KeyboardInterrupt:
                 logger.info("👋 Interrupted by user")
@@ -724,6 +851,7 @@ class EnhancedMLTradingSystem:
             print(f"Technical Analysis: ✅ Active")
             print(f"Volume Analysis: ✅ Active") 
             print(f"Value Assessment: ✅ Active")
+            print(f"GitHub Stock Sources: ✅ Active")
 
             trade_history = self.db_manager.get_trade_history(days=90)
             print(f"\nTraining Data: {len(trade_history)} trades (min {config.MIN_TRAINING_SAMPLES} for ML)")
@@ -747,98 +875,15 @@ class EnhancedMLTradingSystem:
             print(f"Max Positions: {config.MAX_POSITIONS}")
             print(f"Daily Recommendations: {config.MAX_DAILY_RECOMMENDATIONS}")
             print(f"Weekend Analysis: {'Enabled' if config.WEEKEND_ANALYSIS_ENABLED else 'Disabled'}")
+            print(f"Stock Sources: GitHub (NASDAQ, NYSE, AMEX)")
+            print(f"Price Data: yfinance API")
 
         except Exception as e:
             logger.error(f"Error showing system settings: {e}")
 
-def run_trade_logging_interface():
-    """Updated trade logging interface"""
-    trade_logger = TradeLogger()
-    portfolio_manager = PortfolioManager()
-
-    while True:
-        try:
-            print("\n" + "="*50)
-            print("📝 TRADE LOGGING MENU")
-            print("="*50)
-            print("1. Log Single Trade")
-            print("2. Show Recent Trades") 
-            print("3. Trade Summary")
-            print("4. Recalculate Portfolio from Trades")
-            print("5. Back to Main Menu")
-
-            choice = input("\nSelect option (1-5): ").strip()
-
-            if choice == '1':
-                trade_logger.log_trade_interactive()
-            elif choice == '2':
-                show_recent_trades(trade_logger.db_manager)
-            elif choice == '3':
-                show_trade_summary(trade_logger.db_manager)
-            elif choice == '4':
-                print("🔄 Recalculating portfolio from all trades...")
-                portfolio = portfolio_manager.calculate_portfolio_from_trades()
-                print(f"✅ Portfolio recalculated: ${portfolio['total_value']:.2f}")
-            elif choice == '5':
-                break
-            else:
-                print("❌ Invalid option. Please select 1-5.")
-
-        except KeyboardInterrupt:
-            print("\n❌ Cancelled")
-            break
-        except Exception as e:
-            print(f"❌ Error: {e}")
-
-def show_recent_trades(db_manager, days: int = 30):
-    """Show recent trades"""
-    try:
-        trades_df = db_manager.get_trade_history(days=days)
-        if trades_df.empty:
-            print("📋 No trades found in the last 30 days")
-            return
-        
-        print(f"\n📋 RECENT TRADES (Last {days} days):")
-        print("-" * 60)
-        
-        for _, trade in trades_df.iterrows():
-            print(f"{trade['timestamp'].strftime('%Y-%m-%d')} | "
-                  f"{trade['action']} {trade['quantity']} {trade['symbol']} @ "
-                  f"${trade['price']:.2f} = ${trade['total_amount']:.2f}")
-            if trade['reasoning']:
-                print(f"   Reason: {trade['reasoning'][:50]}...")
-        
-    except Exception as e:
-        print(f"❌ Error showing recent trades: {e}")
-
-def show_trade_summary(db_manager):
-    """Show trade summary statistics"""
-    try:
-        trades_df = db_manager.get_trade_history(days=365)  # Last year
-        if trades_df.empty:
-            print("📋 No trades found")
-            return
-        
-        print("\n📊 TRADE SUMMARY:")
-        print("-" * 40)
-        print(f"Total Trades: {len(trades_df)}")
-        print(f"Buy Orders: {len(trades_df[trades_df['action'] == 'BUY'])}")
-        print(f"Sell Orders: {len(trades_df[trades_df['action'] == 'SELL'])}")
-        print(f"Total Volume: ${trades_df['total_amount'].sum():.2f}")
-        print(f"Average Trade Size: ${trades_df['total_amount'].mean():.2f}")
-        
-        # Most traded symbols
-        symbol_counts = trades_df['symbol'].value_counts()
-        print(f"\nMost Traded Symbols:")
-        for symbol, count in symbol_counts.head(5).items():
-            print(f"  {symbol}: {count} trades")
-        
-    except Exception as e:
-        print(f"❌ Error showing trade summary: {e}")
-
 def main():
     try:
-        print("🚀 Initializing Enhanced ML Trading System with Portfolio Tracking...")
+        print("🚀 Initializing Enhanced ML Trading System with GitHub Stock Sources...")
 
         trading_system = EnhancedMLTradingSystem()
 
