@@ -1,6 +1,7 @@
 """
 Database management system for AI Trading System
 """
+
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -15,6 +16,7 @@ Base = declarative_base()
 
 class Portfolio(Base):
     __tablename__ = 'portfolio'
+
     id = Column(Integer, primary_key=True)
     total_value = Column(Float, nullable=False)
     cash = Column(Float, nullable=False)
@@ -26,6 +28,7 @@ class Portfolio(Base):
 
 class Position(Base):
     __tablename__ = 'positions'
+
     id = Column(Integer, primary_key=True)
     symbol = Column(String(10), nullable=False)
     quantity = Column(Integer, nullable=False)
@@ -42,6 +45,7 @@ class Position(Base):
 
 class Trade(Base):
     __tablename__ = 'trades'
+
     id = Column(Integer, primary_key=True)
     symbol = Column(String(10), nullable=False)
     action = Column(String(10), nullable=False)
@@ -57,6 +61,7 @@ class Trade(Base):
 
 class AIRecommendation(Base):
     __tablename__ = 'ai_recommendations'
+
     id = Column(Integer, primary_key=True)
     symbol = Column(String(10), nullable=False)
     action = Column(String(10), nullable=False)
@@ -84,6 +89,7 @@ class DatabaseManager:
             # Filter only valid Portfolio columns
             valid_keys = ['total_value', 'cash', 'invested_amount', 'total_return', 'daily_pnl', 'num_positions', 'timestamp']
             filtered_data = {k: v for k, v in portfolio_data.items() if k in valid_keys}
+
             if 'timestamp' not in filtered_data:
                 filtered_data['timestamp'] = datetime.now()
 
@@ -132,6 +138,7 @@ class DatabaseManager:
                      'daily_pnl': p.daily_pnl, 'num_positions': p.num_positions}
                     for p in query.all()
                 ]
+
                 return pd.DataFrame(data)
         except Exception as e:
             logger.error(f"Error getting portfolio history: {e}")
@@ -148,10 +155,60 @@ class DatabaseManager:
                      'reasoning': t.reasoning, 'confidence': t.confidence}
                     for t in query.all()
                 ]
+
                 return pd.DataFrame(data)
         except Exception as e:
             logger.error(f"Error getting trade history: {e}")
             return pd.DataFrame()
+
+    def get_all_trades(self) -> List[Dict[str, Any]]:
+        """
+        ADDED: Get all trades from the database (no date limit)
+        Returns list of dictionaries instead of SQLAlchemy objects for easier processing
+        """
+        try:
+            with self.get_session() as session:
+                trades = session.query(Trade).order_by(Trade.timestamp).all()
+                trade_list = []
+                for t in trades:
+                    trade_dict = {
+                        'id': t.id,
+                        'symbol': t.symbol,
+                        'action': t.action,
+                        'quantity': t.quantity,
+                        'price': t.price,
+                        'total_amount': t.total_amount,
+                        'fees': t.fees,
+                        'reasoning': t.reasoning,
+                        'confidence': t.confidence,
+                        'timestamp': t.timestamp,
+                        'portfolio_value_before': t.portfolio_value_before,
+                        'portfolio_value_after': t.portfolio_value_after
+                    }
+                    trade_list.append(trade_dict)
+
+                logger.info(f"Retrieved {len(trade_list)} trades from database")
+                return trade_list
+
+        except Exception as e:
+            logger.error(f"Error getting all trades: {e}")
+            return []
+
+    def update_trade_portfolio_value_after(self, timestamp: datetime, portfolio_value: float) -> None:
+        """
+        ADDED: Update the portfolio_value_after field for a specific trade
+        """
+        try:
+            with self.get_session() as session:
+                trade = session.query(Trade).filter(Trade.timestamp == timestamp).first()
+                if trade:
+                    trade.portfolio_value_after = portfolio_value
+                    session.commit()
+                    logger.debug(f"Updated portfolio value after for trade at {timestamp}")
+                else:
+                    logger.warning(f"Trade not found for timestamp {timestamp}")
+        except Exception as e:
+            logger.error(f"Error updating trade portfolio value: {e}")
 
     def calculate_performance_metrics(self) -> Dict[str, float]:
         return {'total_return': 0.0, 'sharpe_ratio': 0.0}
