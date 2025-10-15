@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 from config import get_config
+import yfinance as yf
 
 config = get_config()
 
@@ -278,81 +279,49 @@ class PortfolioManager:
             logger.error(f"Error calculating Kelly position size: {e}")
             return 0.0
 
+
     def execute_trade(self, symbol: str, action: str, price: float,
-                     expected_return: float = None, confidence: float = None, 
-                     reasoning: str = "") -> Tuple[bool, str]:
+                      expected_return: float = None, confidence: float = None, 
+                      reasoning: str = "") -> Tuple[bool, str]:
         """
         Execute a trade with CORRECTED Kelly criterion position sizing
+        WITHOUT logging or registering the trade.
         """
-        # Initialize quantity at the very start to prevent any NameError
         quantity = 0
-
         try:
-            # Get current portfolio value
             current_portfolio = self.get_portfolio_summary()
             portfolio_value = current_portfolio['total_value']
             cash = current_portfolio['cash']
-
-            logger.info(f"Executing trade for {symbol}: Portfolio=${portfolio_value:.2f}, Cash=${cash:.2f}")
-
             # Use reasonable defaults if not provided
             if expected_return is None:
                 expected_return = 0.12  # 12% default
             if confidence is None:
                 confidence = 0.7  # 70% default
 
-            # ---- CORRECTED KELLY SIZING LOGIC ----
             position_size = self.get_fractional_kelly_position_size(
                 price, expected_return, confidence, portfolio_value
             )
-
             quantity = int(position_size // price) if position_size > 0 else 0
-
             if quantity == 0:
                 return False, f"Kelly sizing resulted in zero position (need >${price:.2f} for 1 share, got ${position_size:.2f})"
-
             total_cost = quantity * price
             if action == "BUY" and total_cost > cash:
                 return False, f"Insufficient cash! Need: ${total_cost:.2f}, Available: ${cash:.2f}"
 
-            # Validate trade
-            current_positions = self.db_manager.get_active_positions()
+            # Validate trade only (no registration, no logging)
+            current_positions = []  # use empty or real positions if needed for validation
             is_valid, validation_msg = self.risk_manager.validate_trade(
                 action, symbol, quantity, price, portfolio_value, current_positions
             )
-
             if not is_valid:
                 return False, validation_msg
 
-            # Log the trade
-            trade_data = {
-                'symbol': symbol,
-                'action': action,
-                'quantity': quantity,
-                'price': price,
-                'total_amount': total_cost,
-                'fees': 0.0,
-                'reasoning': reasoning,
-                'confidence': confidence,
-                'timestamp': datetime.now(),
-                'portfolio_value_before': portfolio_value,
-                'portfolio_value_after': None
-            }
-
-            self.db_manager.save_trade(trade_data)
-
-            # Recalculate portfolio
-            updated_portfolio = self.calculate_portfolio_from_trades()
-            self._update_trade_portfolio_value_after(trade_data['timestamp'], updated_portfolio['total_value'])
-
-            logger.info(f"✅ Trade executed: {action} {quantity} {symbol} @ ${price:.2f}")
-            logger.info(f"Portfolio: ${portfolio_value:.2f} -> ${updated_portfolio['total_value']:.2f}")
-
-            return True, f"✅ Trade executed: {quantity} shares {action} {symbol} @ ${price:.2f} = ${total_cost:.2f}"
+            # No logging or database operations!
+            return True, f"Trade calculated (not registered): {quantity} shares {action} {symbol} @ ${price:.2f} = ${total_cost:.2f}"
 
         except Exception as e:
-            logger.error(f"Error executing trade: {e}")
             return False, f"Trade execution failed: {str(e)}"
+
 
     def calculate_portfolio_from_trades(self) -> Dict[str, Any]:
         """Calculate current portfolio value from all trades"""
@@ -456,6 +425,22 @@ class EnhancedMLTradingSystem:
 
         logger.info("✅ Enhanced ML Trading System with CORRECTED Kelly Sizing initialized")
 
+    def get_current_price(self, symbol: str) -> float:
+        """
+        Fetch latest closing price from Yahoo Finance for the given symbol.
+        Returns float or None if not found.
+        """
+        try:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period="1d")
+            if not data.empty:
+                return float(data['Close'].iloc[-1])
+            else:
+                return None
+        except Exception as e:
+            print(f"Error fetching price for {symbol}: {e}")
+            return None
+
     def run_daily_update(self) -> None:
         try:
             logger.info("🚀 Starting daily update with GitHub stock analysis...")
@@ -479,12 +464,19 @@ class EnhancedMLTradingSystem:
             )
 
             all_recommendations = self._combine_recommendations(ml_recommendations, ai_recommendations)
+
+            for rec in all_recommendations:
+                if not rec.get('price'):
+                    current_price = self.get_current_price(rec['symbol'])
+                    rec['price'] = current_price
+
+            
             self._display_recommendations(all_recommendations, portfolio_data)
 
             # Execute trades for BUY recommendations
             for rec in all_recommendations:
                 if rec['action'] == "BUY":
-                    price = rec.get('price_target') or rec.get('price') or 50.0
+                    price = rec.get('price') or rec.get('price_target') or 50.0
                     expected_return = rec.get('expected_return', 0.12)
                     confidence = rec.get('confidence', 0.7)
                     reasoning = rec.get('reasoning', 'AI/ML recommendation')
@@ -606,11 +598,13 @@ class EnhancedMLTradingSystem:
 
             for i, rec in enumerate(recommendations, 1):
                 print(f"{i}. {rec['symbol']} - {rec['action']}")
-                print(f"   Source: {rec['source']} | Confidence: {rec['confidence']:.1%}")
+                print(f" Source: {rec['source']} | Confidence: {rec['confidence']:.1%}")
+                print(f" Current Price: ${rec['price']:.2f}")
                 if rec.get('price_target'):
-                    print(f"   Price Target: ${rec['price_target']:.2f}")
-                print(f"   Reasoning: {rec['reasoning'][:100]}...")
-                print()
+                    print(f" Price Target: ${rec['price_target']:.2f}")
+                print(f" Reasoning: {rec['reasoning'][:100]}...\n")
+
+
 
             # Save recommendations
             for rec in recommendations:
